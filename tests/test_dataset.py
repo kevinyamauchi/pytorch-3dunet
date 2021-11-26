@@ -4,13 +4,70 @@ from tempfile import NamedTemporaryFile
 import h5py
 import numpy as np
 from torch.utils.data import DataLoader
-
+import pytest
 from pytorch3dunet.datasets.hdf5 import StandardHDF5Dataset, AbstractHDF5Dataset
+from pytorch3dunet.datasets.memory import MemoryDataset
 
 
+class TestMemoryDataset:
+    """
+    Test converting an in-memory numpy array to a pytorch dataset.
+    """
+    def test_mermory_dataset(self, transformer_config):
+        """
+        Test a random input numpy array of floats [0,1) of a given shape.
+        Currently only tests a single input.
+        Args:
+            transformer_config:
+
+        Returns:
+
+        """
+        raws=[]
+        for i in range(5):
+            raw = np.random.rand(128, 128, 128)
+            raws.append(raw)
+
+        patch_shapes = [(127, 127, 127), (69, 70, 70), (32, 64, 64)]
+        stride_shapes = [(1, 1, 1), (17, 23, 23), (32, 64, 64)]
+
+        phase = 'test'
+
+        for patch_shape, stride_shape in zip(patch_shapes, stride_shapes):
+            dataset = MemoryDataset(raws=raws, phase=phase,
+                                    slice_builder_config=_slice_builder_conf(patch_shape, stride_shape),
+                                    transformer_config=transformer_config[phase]['transformer'],
+                                    mirror_padding=None)
+
+            # create zero-arrays of the same shape as the original dataset in order to verify if every element
+            # was visited during the iteration
+            visit_raw = np.zeros_like(raws)
+
+            for (_, idx) in dataset:
+                visit_raw[idx] = 1
+
+            # verify that every element was visited at least once
+            assert np.all(visit_raw)
+
+    @staticmethod
+    def create_random_memory_dataset(shape, ignore_index=False):
+        """
+        Create a simple dataset that consists of
+        Args:
+            shape: Tuple Shape of the input image numpy array
+
+        Returns:
+            raw_dataset: np.Array(Floats[0,1)) Input data
+            label_dataset: np.Array(Integers[0,2) label data
+        """
+
+        return raw_dataset, label_dataset
+
+
+@pytest.mark.skip(reason="Currently not looking to test this function.")
 class TestHDF5Dataset:
     def test_hdf5_dataset(self, transformer_config):
-        path = create_random_dataset((128, 128, 128))
+        path = create_random_hdf5_dataset((128, 128, 128))
 
         patch_shapes = [(127, 127, 127), (69, 70, 70), (32, 64, 64)]
         stride_shapes = [(1, 1, 1), (17, 23, 23), (32, 64, 64)]
@@ -43,7 +100,7 @@ class TestHDF5Dataset:
                 assert np.all(visit_label)
 
     def test_hdf5_with_multiple_label_datasets(self, transformer_config):
-        path = create_random_dataset((128, 128, 128), label_datasets=['label1', 'label2'])
+        path = create_random_hdf5_dataset((128, 128, 128), label_datasets=['label1', 'label2'])
         patch_shape = (32, 64, 64)
         stride_shape = (32, 64, 64)
         phase = 'train'
@@ -57,8 +114,8 @@ class TestHDF5Dataset:
             assert len(labels) == 2
 
     def test_hdf5_with_multiple_raw_and_label_datasets(self, transformer_config):
-        path = create_random_dataset((128, 128, 128), raw_datasets=['raw1', 'raw2'],
-                                     label_datasets=['label1', 'label2'])
+        path = create_random_hdf5_dataset((128, 128, 128), raw_datasets=['raw1', 'raw2'],
+                                          label_datasets=['label1', 'label2'])
         patch_shape = (32, 64, 64)
         stride_shape = (32, 64, 64)
         phase = 'train'
@@ -117,7 +174,7 @@ class TestHDF5Dataset:
         assert expected_files == actual_files
 
 
-def create_random_dataset(shape, ignore_index=False, raw_datasets=None, label_datasets=None):
+def create_random_hdf5_dataset(shape, ignore_index=False, raw_datasets=None, label_datasets=None):
     if label_datasets is None:
         label_datasets = ['label']
     if raw_datasets is None:
