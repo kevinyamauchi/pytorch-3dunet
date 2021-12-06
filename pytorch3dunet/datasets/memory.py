@@ -41,7 +41,8 @@ class MemoryDataset(ConfigDataset):
                 mirror_padding = (mirror_padding,) * 3
             else:
                 assert len(mirror_padding) == 3, f"Invalid mirror_padding: {mirror_padding}"
-
+        # File_path defined for simplicity. Its printed sometimes to explain where the data is extracted from.
+        self.file_path = "memory"
         self.mirror_padding = mirror_padding
         self.phase = phase
 
@@ -122,38 +123,29 @@ class MemoryDataset(ConfigDataset):
         return self.patch_count
 
     @classmethod
-    def create_datasets(cls, dataset_config, phase):
-        logger.error(f'When is this create datasets methods called{phase} set from: {file_path}...')
+    def create_datasets(cls, dataset_config, phase, raw_dataset):
         phase_config = dataset_config[phase]
 
         # load data augmentation configuration
         transformer_config = phase_config['transformer']
         # load slice builder config
         slice_builder_config = phase_config['slice_builder']
-        # load files to process
-        file_paths = phase_config['file_paths']
-        # file_paths may contain both files and directories; if the file_path is a directory all H5 files inside
-        # are going to be included in the final file_paths
-        file_paths = cls.traverse_h5_paths(file_paths)
 
         # load instance sampling configuration
         instance_ratio = phase_config.get('instance_ratio', None)
         random_seed = phase_config.get('random_seed', 0)
 
-        datasets = []
-        for file_path in file_paths:
-            try:
-                logger.info(f'Loading {phase} set from: {file_path}...')
-                dataset = cls(raws=raws,
-                              phase=phase,
-                              slice_builder_config=slice_builder_config,
-                              transformer_config=transformer_config,
-                              mirror_padding=dataset_config.get('mirror_padding', None),
-                              instance_ratio=instance_ratio, random_seed=random_seed)
-                datasets.append(dataset)
-            except Exception:
-                logger.error(f'Skipping {phase} set: {file_path}', exc_info=True)
-        return datasets
+        try:
+            logger.info(f'Loading {phase} set from in-memory dataset.')
+            dataset = cls(raws=raw_dataset,
+                          phase=phase,
+                          slice_builder_config=slice_builder_config,
+                          transformer_config=transformer_config,
+                          mirror_padding=dataset_config.get('mirror_padding', None),
+                          instance_ratio=instance_ratio, random_seed=random_seed)
+        except Exception:
+            logger.error(f'Skipping {phase} set from in-memory dataset.', exc_info=True)
+        return [dataset]
 
     @staticmethod
     def traverse_h5_paths(file_paths):

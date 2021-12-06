@@ -6,6 +6,7 @@ import torch
 from skimage import measure
 
 from pytorch3dunet.datasets.hdf5 import AbstractHDF5Dataset
+from pytorch3dunet.datasets.memory import MemoryDataset
 from pytorch3dunet.datasets.utils import SliceBuilder
 from pytorch3dunet.unet3d.utils import get_logger
 from pytorch3dunet.unet3d.utils import remove_halo
@@ -13,8 +14,8 @@ from pytorch3dunet.unet3d.utils import remove_halo
 logger = get_logger('UNetPredictor')
 
 
-def _get_output_file(dataset, suffix='_predictions', output_dir=None):
-    input_dir, file_name = os.path.split(dataset.file_path)
+def _get_output_file(input_file_path, suffix='_predictions', output_dir=None):
+    input_dir, file_name = os.path.split(input_file_path)
     if output_dir is None:
         output_dir = input_dir
     output_file = os.path.join(output_dir, os.path.splitext(file_name)[0] + suffix + '.h5')
@@ -76,16 +77,17 @@ class StandardPredictor(_AbstractPredictor):
         model (Unet3D): trained 3D UNet model used for prediction
         output_dir (str): path to the output directory (optional)
         config (dict): global config dict
+    Returns:
+        results_collection (dict): dictionary
     """
 
     def __init__(self, model, output_dir, config, **kwargs):
         super().__init__(model, output_dir, config, **kwargs)
 
     def __call__(self, test_loader):
-        assert isinstance(test_loader.dataset, AbstractHDF5Dataset)
+        assert isinstance(test_loader.dataset, AbstractHDF5Dataset) or isinstance(test_loader.dataset, MemoryDataset)
 
         logger.info(f"Processing '{test_loader.dataset.file_path}'...")
-        output_file = _get_output_file(dataset=test_loader.dataset, output_dir=self.output_dir)
 
         out_channels = self.config['model'].get('out_channels')
 
@@ -112,12 +114,10 @@ class StandardPredictor(_AbstractPredictor):
         self._validate_halo(patch_halo, self.config['loaders']['test']['slice_builder'])
         logger.info(f'Using patch_halo: {patch_halo}')
 
-        # create destination H5 file
-        h5_output_file = h5py.File(output_file, 'w')
         # allocate prediction and normalization arrays
         logger.info('Allocating prediction and normalization arrays...')
         prediction_maps, normalization_masks = self._allocate_prediction_maps(prediction_maps_shape,
-                                                                              output_heads, h5_output_file)
+                                                                              output_heads)
 
         # Sets the module in evaluation mode explicitly (necessary for batchnorm/dropout layers if present)
         self.model.eval()
@@ -166,13 +166,18 @@ class StandardPredictor(_AbstractPredictor):
                         # count voxel visits for normalization
                         normalization_mask[u_index] += 1
 
+        output_file = _get_output_file(input_file_path=test_loader.dataset.file_path, output_dir=self.output_dir)
+        # create destination H5 file
+        h5_output_file = h5py.File(output_file, 'w')
         # save results
         logger.info(f'Saving predictions to: {output_file}')
-        self._save_results(prediction_maps, normalization_masks, output_heads, h5_output_file, test_loader.dataset)
+        results_collection = self._save_results(prediction_maps, normalization_masks, output_heads, h5_output_file, test_loader.dataset)
         # close the output H5 file
         h5_output_file.close()
 
-    def _allocate_prediction_maps(self, output_shape, output_heads, output_file):
+        return results_collection if isinstance(test_loader.dataset, MemoryDataset) else None
+
+    def _allocate_prediction_maps(self, output_shape, output_heads):
         # initialize the output prediction arrays
         prediction_maps = [np.zeros(output_shape, dtype='float32') for _ in range(output_heads)]
         # initialize normalization mask in order to average out probabilities of overlapping patches
@@ -188,6 +193,7 @@ class StandardPredictor(_AbstractPredictor):
 
         # save probability maps
         prediction_datasets = self.get_output_dataset_names(output_heads, prefix='predictions')
+        result_dataset_collection = dict()
         for prediction_map, normalization_mask, prediction_dataset in zip(prediction_maps, normalization_masks,
                                                                           prediction_datasets):
             prediction_map = prediction_map / normalization_mask
@@ -199,7 +205,9 @@ class StandardPredictor(_AbstractPredictor):
 
                 prediction_map = prediction_map[:, z_s, y_s, x_s]
 
+            result_dataset_collection[prediction_dataset] = prediction_map
             output_file.create_dataset(prediction_dataset, data=prediction_map, compression="gzip")
+        return result_dataset_collection
 
     @staticmethod
     def _validate_halo(patch_halo, slice_builder_config):

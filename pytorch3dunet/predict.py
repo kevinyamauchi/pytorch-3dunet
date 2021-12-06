@@ -22,17 +22,27 @@ def _get_predictor(model, output_dir, config):
     return predictor_class(model, output_dir, config, **predictor_config)
 
 
-def main():
-    # Load configuration
-    config = load_config()
+def run_predictions(config, raw_dataset=None):
+    """
+    Run prediction pipeline using config dictionary and if a in-memory dataset is passed on then return that one.
+    Args:
+        config: Dict - Configuration dictionary (includes input file location if no dataset type is not MemoryDataset)
+        raw_dataset: np.array Raw dataset which is already loaded in memory
 
+    Returns:
+        results_list: List(Dict("name":data)) - Returns the list of predictions as a dictionary
+    """
     # Create the model
     model = get_model(config['model'])
 
     # Load model state
     model_path = config['model_path']
-    logger.info(f'Loading model from {model_path}...')
-    utils.load_checkpoint(model_path, model)
+    if model_path == "":
+        logger.info('No model to load from path')
+    else:
+        logger.info(f'Loading model from {model_path}...')
+        utils.load_checkpoint(model_path, model)
+
     # use DataParallel if more than 1 GPU available
     device = config['device']
     if torch.cuda.device_count() > 1 and not device.type == 'cpu':
@@ -50,10 +60,23 @@ def main():
     # create predictor instance
     predictor = _get_predictor(model, output_dir, config)
 
-    for test_loader in get_test_loaders(config):
+    result_list = []
+    for test_loader in get_test_loaders(config, raw_dataset):
         # run the model prediction on the test_loader and save the results in the output_dir
-        predictor(test_loader)
+        results = predictor(test_loader)
+        # If an in-memory dataset is passed then also save results in memory to be able to return them in-memory
+        result_list.append(results)
+
+    # Only return results if in-memory dataset is passed
+    if raw_dataset:
+        logger.info(f'length of results list: {len(result_list)}, dict keys of first list entry {result_list[0].keys()}')
+        return result_list
+    else:
+        return None
 
 
 if __name__ == '__main__':
-    main()
+    # Load configuration
+    config = load_config()
+
+    run_predictions(config)

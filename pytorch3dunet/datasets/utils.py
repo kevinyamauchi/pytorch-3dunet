@@ -307,11 +307,16 @@ def get_train_loaders(config):
     }
 
 
-def get_test_loaders(config):
+def get_test_loaders(config, raw_dataset=None):
     """
     Returns test DataLoader.
 
-    :return: generator of DataLoader objects
+    Args:
+        config: Dict - Configuration Dictionary
+        raw_dataset: List(List(np.arrays)) Collection of datasets
+
+    Returns:
+        generator of DataLoader objects
     """
 
     assert 'loaders' in config, 'Could not find data loaders configuration'
@@ -326,7 +331,14 @@ def get_test_loaders(config):
         logger.warn(f"Cannot find dataset class in the config. Using default '{dataset_cls_str}'.")
     dataset_class = _loader_classes(dataset_cls_str)
 
-    test_datasets = dataset_class.create_datasets(loaders_config, phase='test')
+    if dataset_cls_str == "MemoryDataset" and raw_dataset is not None:
+        logger.info('Creating datasets from memory.')
+        test_datasets = dataset_class.create_datasets(loaders_config,
+                                                      raw_dataset=raw_dataset,
+                                                      phase='test')
+    else:
+        logger.info('Creating datasets from files.')
+        test_datasets = dataset_class.create_datasets(loaders_config, phase='test')
 
     num_workers = loaders_config.get('num_workers', 1)
     logger.info(f'Number of workers for the dataloader: {num_workers}')

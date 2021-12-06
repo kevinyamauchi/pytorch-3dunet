@@ -15,8 +15,8 @@ class TestMemoryDataset:
     """
     def test_mermory_dataset(self, transformer_config):
         """
-        Test a random input numpy array of floats [0,1) of a given shape.
-        Currently only tests a single input.
+        Test random input numpy arrays of floats [0,1) of a given shape.
+        Currently tests one input.
         Args:
             transformer_config:
 
@@ -24,7 +24,7 @@ class TestMemoryDataset:
 
         """
         raws=[]
-        for i in range(5):
+        for i in range(1):
             raw = np.random.rand(128, 128, 128)
             raws.append(raw)
 
@@ -49,22 +49,7 @@ class TestMemoryDataset:
             # verify that every element was visited at least once
             assert np.all(visit_raw)
 
-    @staticmethod
-    def create_random_memory_dataset(shape, ignore_index=False):
-        """
-        Create a simple dataset that consists of
-        Args:
-            shape: Tuple Shape of the input image numpy array
 
-        Returns:
-            raw_dataset: np.Array(Floats[0,1)) Input data
-            label_dataset: np.Array(Integers[0,2) label data
-        """
-
-        return raw_dataset, label_dataset
-
-
-@pytest.mark.skip(reason="Currently not looking to test this function.")
 class TestHDF5Dataset:
     def test_hdf5_dataset(self, transformer_config):
         path = create_random_hdf5_dataset((128, 128, 128))
