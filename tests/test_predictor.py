@@ -33,13 +33,14 @@ class TestPredictor:
 
         assert os.path.exists(os.path.join(tmpdir, os.path.split(tmp.name)[1] + '_predictions.h5'))
 
-    def test_standard_predictor_memory_dataset(self, tmpdir, test_config):
+    def test_inmemory_predictor(self, tmpdir, test_config):
         # Add output dir
         test_config['loaders']['output_dir'] = tmpdir
         # Initialize device
         test_config['device'] = get_device(test_config.get('device', None))
         # Set dataset Type to MemoryDataset
         test_config['loaders']['dataset'] = "MemoryDataset"
+        test_config['predictor']['name'] = "InMemoryPredictor"
 
         raw_dataset = []
         shape = (32, 64, 64)
@@ -49,7 +50,6 @@ class TestPredictor:
         result_list = run_predictions(test_config, raw_dataset=raw_dataset)
 
         assert result_list is not None
-        assert os.path.exists(os.path.join(tmpdir, 'memory_predictions.h5'))
 
     def test_remove_halo(self):
         patch_halo = (4, 4, 4)
