@@ -4,15 +4,15 @@ from tempfile import NamedTemporaryFile
 import h5py
 import numpy as np
 import torch
+import pytest
 
-from pytorch3dunet.datasets.utils import get_test_loaders
-from pytorch3dunet.predict import _get_predictor
-from pytorch3dunet.unet3d.model import get_model
+from pytorch3dunet.predict import run_predictions
 from pytorch3dunet.unet3d.utils import remove_halo
+from pytorch3dunet.unet3d.config import get_device
 
 
 class TestPredictor:
-    def test_stanard_predictor(self, tmpdir, test_config):
+    def test_standard_predictor(self, tmpdir, test_config):
         # Add output dir
         test_config['loaders']['output_dir'] = tmpdir
 
@@ -26,19 +26,30 @@ class TestPredictor:
         # Add input file
         test_config['loaders']['test']['file_paths'] = [tmp.name]
 
-        # Create the model with random weights
-        model = get_model(test_config['model'])
-        # Create device and update config
-        device = torch.device("cuda:0" if torch.cuda.is_available() else 'cpu')
-        test_config['device'] = device
-        model = model.to(device)
+        # Initialize device
+        test_config['device'] = get_device(test_config.get('device', None))
 
-        for test_loader in get_test_loaders(test_config):
-            predictor = _get_predictor(model, tmpdir, test_config)
-            # run the model prediction on the entire dataset and save to the 'output_file' H5
-            predictor(test_loader)
+        run_predictions(test_config)
 
         assert os.path.exists(os.path.join(tmpdir, os.path.split(tmp.name)[1] + '_predictions.h5'))
+
+    def test_inmemory_predictor(self, tmpdir, test_config):
+        # Add output dir
+        test_config['loaders']['output_dir'] = tmpdir
+        # Initialize device
+        test_config['device'] = get_device(test_config.get('device', None))
+        # Set dataset Type to MemoryDataset
+        test_config['loaders']['dataset'] = "MemoryDataset"
+        test_config['predictor']['name'] = "InMemoryPredictor"
+
+        raw_dataset = []
+        shape = (32, 64, 64)
+        for image in range(1):
+            raw_dataset.append(np.random.rand(*shape))
+
+        result_list = run_predictions(test_config, raw_dataset=raw_dataset)
+
+        assert result_list is not None
 
     def test_remove_halo(self):
         patch_halo = (4, 4, 4)
