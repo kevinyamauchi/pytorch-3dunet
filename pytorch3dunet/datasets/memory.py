@@ -143,9 +143,9 @@ class MemoryDataset(ConfigDataset):
                           transformer_config=transformer_config,
                           mirror_padding=dataset_config.get('mirror_padding', None),
                           instance_ratio=instance_ratio, random_seed=random_seed)
+            return [dataset]
         except Exception:
             logger.error(f'Skipping {phase} set from in-memory dataset.', exc_info=True)
-        return [dataset]
 
     @staticmethod
     def traverse_h5_paths(file_paths):
