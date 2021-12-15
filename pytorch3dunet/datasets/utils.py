@@ -313,7 +313,7 @@ def get_test_loaders(config, raw_dataset=None):
 
     Args:
         config: Dict - Configuration Dictionary
-        raw_dataset: List(List(np.arrays)) Collection of datasets
+        raw_dataset: List[np.array] Collection of datasets
 
     Returns:
         generator of DataLoader objects

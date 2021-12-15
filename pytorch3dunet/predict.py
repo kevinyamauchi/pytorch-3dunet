@@ -27,7 +27,7 @@ def run_predictions(config, raw_dataset=None):
     Run prediction pipeline using config dictionary and if a in-memory dataset is passed on then return that one.
     Args:
         config: Dict - Configuration dictionary (includes input file location if no dataset type is not MemoryDataset)
-        raw_dataset: np.array Raw dataset which is already loaded in memory
+        raw_dataset: List[np.array] Raw dataset which is already loaded in memory
 
     Returns:
         results_list: List(Dict("name":data)) - Returns the list of predictions as a dictionary

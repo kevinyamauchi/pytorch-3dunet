@@ -27,14 +27,24 @@ class MemoryDataset(ConfigDataset):
                  instance_ratio=None,
                  random_seed=0):
         """
-        :param raws: list of np.arrays containing raw data
-        :param phase: Should only be 'test' for testing TODO: Verify if needed
-        :param slice_builder_config: configuration of the SliceBuilder
-        :param transformer_config: data augmentation configuration
-        :param mirror_padding (int or tuple): number of voxels padded to each axis
-        :param instance_ratio (float): A number between (0, 1]: specifies a fraction of ground truth instances to be
-            sampled from the dense ground truth labels. TODO: Verify if needed
-        :param random_seed: Random seed TODO: Verify if needed
+        Initialisation function for the memory dataset class.
+
+        Args:
+            raws: List[np.arrays]
+                Dataset containing raw images as np.arrays
+            phase: str
+                Should only be 'test' for testing TODO: Verify if needed
+            slice_builder_config: dict
+                Configuration of the SliceBuilder
+            transformer_config: dict
+                Data augmentation configuration
+            mirror_padding: int or tuple
+                Number of voxels padded to each axis
+            instance_ratio: float
+                A number between (0, 1]: specifies a fraction of ground truth instances to be
+                sampled from the dense ground truth labels. TODO: Verify if needed
+            random_seed: NoneType, int, float, str, bytes, or bytearray
+                Random seed TODO: Verify if needed
         """
         if mirror_padding is not None:
             if isinstance(mirror_padding, int):
@@ -124,6 +134,20 @@ class MemoryDataset(ConfigDataset):
 
     @classmethod
     def create_datasets(cls, dataset_config, phase, raw_dataset):
+        """
+        Class method to create a dataset from the config, phase and the given raw_dataset
+        Args:
+            dataset_config: dict
+                Configuration of how to load and pre-process the dataset
+            phase: str
+                Phase of the machine learning protocoll (train, validation or test)
+            raw_dataset: List[np.array]
+                List of images
+
+        Returns:
+            List[MemoryDataset]
+                List of resulting memory dataset object
+        """
         phase_config = dataset_config[phase]
 
         # load data augmentation configuration
