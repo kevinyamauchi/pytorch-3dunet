@@ -47,4 +47,4 @@ def get_device(device_str):
 
 
 def _load_config_yaml(config_file):
-    return yaml.load(open(config_file, 'r'), loader=SafeLoader)
+    return yaml.load(open(config_file, 'r'), loader=yaml.SafeLoader)
