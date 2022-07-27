@@ -440,7 +440,7 @@ class MSE:
 class WeightedMSE:
     def __init__(self, threshold, initial_weight, apply_below_threshold=True, **kwargs):
         self.threshold = threshold
-        self.initial_weight = initial_weight
+        self.weight = initial_weight
         self.apply_below_threshold = apply_below_threshold
 
     def __call__(self, input, target):
