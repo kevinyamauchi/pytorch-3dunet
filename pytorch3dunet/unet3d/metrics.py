@@ -438,14 +438,14 @@ class MSE:
 
 
 class WeightedMSE:
-    def __init__(self, threshold, initial_weight, apply_below_threshold=True):
+    def __init__(self, threshold, initial_weight, apply_below_threshold=True, **kwargs):
         self.threshold = threshold
         self.initial_weight = initial_weight
         self.apply_below_threshold = apply_below_threshold
 
     def __call__(self, input, target):
         input, target = convert_to_numpy(input, target)
-        mse = mean_squared_error(input, target)
+        mse = np.square(input - target)
 
         # make the mask
         if self.apply_below_threshold:
@@ -453,7 +453,9 @@ class WeightedMSE:
         else:
             mask = target >= self.threshold
 
-        return mse[mask] * self.weight
+        mse[mask] = mse[mask] * self.weight
+
+        return np.mean(mse)
 
 
 def get_evaluation_metric(config):
