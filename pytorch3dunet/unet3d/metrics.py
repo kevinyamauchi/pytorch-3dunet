@@ -437,6 +437,25 @@ class MSE:
         return mean_squared_error(input, target)
 
 
+class WeightedMSE:
+    def __init__(self, threshold, initial_weight, apply_below_threshold=True):
+        self.threshold = threshold
+        self.initial_weight = initial_weight
+        self.apply_below_threshold = apply_below_threshold
+
+    def __call__(self, input, target):
+        input, target = convert_to_numpy(input, target)
+        mse = mean_squared_error(input, target)
+
+        # make the mask
+        if self.apply_below_threshold:
+            mask = target < self.threshold
+        else:
+            mask = target >= self.threshold
+
+        return mse[mask] * self.weight
+
+
 def get_evaluation_metric(config):
     """
     Returns the evaluation metric function based on provided configuration
