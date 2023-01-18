@@ -246,6 +246,15 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
     def create_h5_file(file_path):
         return LazyHDF5File(file_path)
 
+    @staticmethod
+    def fetch_and_check(input_file, internal_path):
+        ds = LazyHDF5File(input_file.path, internal_path)
+        if ds.ndim == 2:
+            ds = input_file[internal_path][:]
+            # expand dims if 2d
+            ds = np.expand_dims(ds, axis=0)
+        return ds
+
 
 class LazyHDF5File:
     """Implementation of the LazyHDF5File class for the LazyHDF5Dataset."""
