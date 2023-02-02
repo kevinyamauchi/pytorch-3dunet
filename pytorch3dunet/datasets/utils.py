@@ -143,11 +143,17 @@ class FilterSliceBuilder(SliceBuilder):
 
         rand_state = np.random.RandomState(47)
 
+	# load the full image up front to reduce IO
+        slicer = ()
+        for dim_index in range(label_dataset.ndim):
+            slicer += (slice(0, label_dataset.shape[dim_index]), )
+        label_image = np.copy(label_dataset[slicer])
+        for ignore_value in ignore_index:
+            label_image[label_image == ignore_value] == 0
+
         def ignore_predicate(raw_label_idx):
             label_idx = raw_label_idx[1]
-            patch = np.copy(label_dataset[label_idx])
-            for ii in ignore_index:
-                patch[patch == ii] = 0
+            patch = label_image[label_idx]
             non_ignore_counts = np.count_nonzero(patch != 0)
             non_ignore_counts = non_ignore_counts / patch.size
             return non_ignore_counts > threshold or rand_state.rand() < slack_acceptance
