@@ -2,6 +2,7 @@ import glob
 import os
 from itertools import chain
 
+import dask.array as da
 import h5py
 import numpy as np
 
@@ -86,11 +87,22 @@ class AbstractHDF5Dataset(ConfigDataset):
             if self.mirror_padding is not None:
                 z, y, x = self.mirror_padding
                 pad_width = ((z, z), (y, y), (x, x))
-                if self.raw.ndim == 4:
-                    channels = [np.pad(r, pad_width=pad_width, mode='reflect') for r in self.raw]
-                    self.raw = np.stack(channels)
+               
+                print(type(self.raw))
+
+                if isinstance(self.raw, da.Array):
+                    pad_func = da.pad
+                    stack_func = da.stack
                 else:
-                    self.raw = np.pad(self.raw, pad_width=pad_width, mode='reflect')
+                    pad_func = np.pad
+                    stack_func = np.stack
+                
+
+                if self.raw.ndim == 4:
+                    channels = [pad_func(r, pad_width=pad_width, mode='reflect') for r in self.raw]
+                    self.raw = stack_func(channels)
+                else:
+                    self.raw = pad_func(self.raw, pad_width=pad_width, mode='reflect')
 
         # build slice indices for raw and label data sets
         slice_builder = get_slice_builder(self.raw, self.label, self.weight_map, slice_builder_config)
@@ -244,15 +256,16 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
 
     @staticmethod
     def create_h5_file(file_path):
-        return LazyHDF5File(file_path)
+        return h5py.File(file_path, "r")
 
     @staticmethod
     def fetch_and_check(input_file, internal_path):
-        ds = LazyHDF5File(input_file.path, internal_path)
+        h5py_dataset = input_file[internal_path]
+        ds = da.from_array(h5py_dataset, chunks=h5py_dataset.chunks)
         if ds.ndim == 2:
-            ds = input_file[internal_path][:]
             # expand dims if 2d
-            ds = np.expand_dims(ds, axis=0)
+            ds = da.expand_dims(ds, axis=0)
+        logger.info(type(ds))
         return ds
 
 
