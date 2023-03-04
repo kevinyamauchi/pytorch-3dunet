@@ -87,8 +87,6 @@ class AbstractHDF5Dataset(ConfigDataset):
             if self.mirror_padding is not None:
                 z, y, x = self.mirror_padding
                 pad_width = ((z, z), (y, y), (x, x))
-               
-                print(type(self.raw))
 
                 if isinstance(self.raw, da.Array):
                     pad_func = da.pad
@@ -96,7 +94,6 @@ class AbstractHDF5Dataset(ConfigDataset):
                 else:
                     pad_func = np.pad
                     stack_func = np.stack
-                
 
                 if self.raw.ndim == 4:
                     channels = [pad_func(r, pad_width=pad_width, mode='reflect') for r in self.raw]
@@ -128,7 +125,7 @@ class AbstractHDF5Dataset(ConfigDataset):
         # get the slice for a given index 'idx'
         raw_idx = self.raw_slices[idx]
         # get the raw data patch for a given slice
-        raw_patch_transformed = self.raw_transform(self.raw[raw_idx])
+        raw_patch_transformed = self.raw_transform(np.asarray(self.raw[raw_idx]))
 
         if self.phase == 'test':
             # discard the channel dimension in the slices: predictor requires only the spatial dimensions of the volume
