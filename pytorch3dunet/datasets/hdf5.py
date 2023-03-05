@@ -85,21 +85,17 @@ class AbstractHDF5Dataset(ConfigDataset):
 
             # add mirror padding if needed
             if self.mirror_padding is not None:
-                z, y, x = self.mirror_padding
-                pad_width = ((z, z), (y, y), (x, x))
-
                 if isinstance(self.raw, da.Array):
-                    pad_func = da.pad
-                    stack_func = da.stack
+                    self._raw.mirror_padding = self.mirror_padding
                 else:
-                    pad_func = np.pad
-                    stack_func = np.stack
+                    z, y, x = self.mirror_padding
+                    pad_width = ((z, z), (y, y), (x, x))
 
-                if self.raw.ndim == 4:
-                    channels = [pad_func(r, pad_width=pad_width, mode='reflect') for r in self.raw]
-                    self.raw = stack_func(channels)
-                else:
-                    self.raw = pad_func(self.raw, pad_width=pad_width, mode='reflect')
+                    if self.raw.ndim == 4:
+                        channels = [np.pad(r, pad_width=pad_width, mode='reflect') for r in self.raw]
+                        self.raw = np.stack(channels)
+                    else:
+                        self.raw = np.pad(self.raw, pad_width=pad_width, mode='reflect')
 
         # build slice indices for raw and label data sets
         slice_builder = get_slice_builder(self.raw, self.label, self.weight_map, slice_builder_config)
@@ -109,6 +105,14 @@ class AbstractHDF5Dataset(ConfigDataset):
 
         self.patch_count = len(self.raw_slices)
         logger.info(f'Number of patches: {self.patch_count}')
+    
+    @property
+    def raw(self):
+        return self._raw
+    
+    @raw.setter
+    def raw(self, raw):
+        self._raw = raw            
 
     @staticmethod
     def fetch_and_check(input_file, internal_path):
@@ -250,6 +254,14 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
                          global_normalization=global_normalization)
 
         logger.info("Using modified HDF5Dataset!")
+        
+    @property
+    def raw(self):
+        return self._raw.to_array()
+    
+    @raw.setter
+    def raw(self, raw):
+        self._raw = raw    
 
     @staticmethod
     def create_h5_file(file_path):
@@ -257,21 +269,21 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
 
     @staticmethod
     def fetch_and_check(input_file, internal_path):
-        h5py_dataset = input_file[internal_path]
-        ds = da.from_array(h5py_dataset, chunks=h5py_dataset.chunks)
+        ds = LazyHDF5File(input_file.path, internal_path)
         if ds.ndim == 2:
+            ds = input_file[internal_path][:]
             # expand dims if 2d
-            ds = da.expand_dims(ds, axis=0)
-        logger.info(type(ds))
+            ds = np.expand_dims(ds, axis=0)
         return ds
 
 
 class LazyHDF5File:
     """Implementation of the LazyHDF5File class for the LazyHDF5Dataset."""
 
-    def __init__(self, path, internal_path=None):
+    def __init__(self, path, internal_path=None, mirror_padding=None):
         self.path = path
         self.internal_path = internal_path
+        self.mirror_padding = mirror_padding
         if self.internal_path:
             with h5py.File(self.path, "r") as f:
                 self.ndim = f[self.internal_path].ndim
@@ -293,3 +305,20 @@ class LazyHDF5File:
             data = f[self.internal_path][arg]
 
         return data
+    
+    def to_array(self):
+        # make the dask array
+        h5py_dataset = h5py.File(self.path, "r")[self.internal_path]
+        ds = da.from_array(h5py_dataset, chunks=h5py_dataset.chunks)
+        
+        # add padding if necessary
+        if self.mirror_padding is not None:
+            z, y, x = self.mirror_padding
+            pad_width = ((z, z), (y, y), (x, x))
+
+            if self.raw.ndim == 4:
+                channels = [da.pad(r, pad_width=pad_width, mode='reflect') for r in self.raw]
+                lazy_array = da.stack(channels)
+            else:
+                lazy_array = da.pad(self.raw, pad_width=pad_width, mode='reflect')
+        return lazy_array
