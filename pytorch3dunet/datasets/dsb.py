@@ -1,4 +1,4 @@
-import collections
+from collections.abc import Sequence
 import os
 
 import imageio
@@ -21,7 +21,7 @@ def dsb_prediction_collate(batch):
         return torch.stack(batch, 0)
     elif isinstance(batch[0], str):
         return list(batch)
-    elif isinstance(batch[0], collections.Sequence):
+    elif isinstance(batch[0], Sequence):
         # transpose tuples, i.e. [[1, 2], ['a', 'b']] to be [[1, 'a'], [2, 'b']]
         transposed = zip(*batch)
         return [dsb_prediction_collate(samples) for samples in transposed]
