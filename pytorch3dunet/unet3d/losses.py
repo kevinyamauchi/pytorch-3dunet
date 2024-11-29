@@ -257,6 +257,26 @@ class WeightedSmoothL1Loss(nn.SmoothL1Loss):
         return l1.mean()
 
 
+class WeightedMSELoss(nn.MSELoss):
+    def __init__(self, threshold, initial_weight, apply_below_threshold=True):
+        super().__init__(reduction="none")
+        self.threshold = threshold
+        self.apply_below_threshold = apply_below_threshold
+        self.weight = initial_weight
+
+    def forward(self, input, target):
+        l1 = super().forward(input, target)
+
+        if self.apply_below_threshold:
+            mask = target < self.threshold
+        else:
+            mask = target >= self.threshold
+
+        l1[mask] = l1[mask] * self.weight
+
+        return l1.mean()
+
+
 def flatten(tensor):
     """Flattens a given tensor such that the channel axis is first.
     The shapes are transformed as follows:
@@ -342,5 +362,11 @@ def _create_loss(name, loss_config, weight, ignore_index, pos_weight):
         return WeightedSmoothL1Loss(threshold=loss_config['threshold'],
                                     initial_weight=loss_config['initial_weight'],
                                     apply_below_threshold=loss_config.get('apply_below_threshold', True))
+    elif name == 'WeightedMSELoss':
+        return WeightedMSELoss(
+            threshold=loss_config['threshold'],
+            initial_weight=loss_config['initial_weight'],
+            apply_below_threshold=loss_config.get('apply_below_threshold', True)
+        )
     else:
         raise RuntimeError(f"Unsupported loss function: '{name}'")
