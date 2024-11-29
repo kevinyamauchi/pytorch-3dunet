@@ -3,7 +3,7 @@ import importlib
 import numpy as np
 import torch
 from skimage import measure
-from skimage.metrics import adapted_rand_error, peak_signal_noise_ratio
+from skimage.metrics import adapted_rand_error, peak_signal_noise_ratio, mean_squared_error
 
 from pytorch3dunet.unet3d.losses import compute_per_channel_dice
 from pytorch3dunet.unet3d.seg_metrics import AveragePrecision, Accuracy
@@ -148,7 +148,7 @@ class AdaptedRandError:
             target = target[:, 0, ...]  # 4D
 
         # ensure target is of integer type
-        target = target.astype(np.int)
+        target = target.astype(np.int32)
 
         if self.ignore_index is not None:
             target[target == self.ignore_index] = 0
@@ -159,7 +159,6 @@ class AdaptedRandError:
             # skip ARand eval if there is only one label in the patch due to the zero-division error in Arand impl
             # xxx/skimage/metrics/_adapted_rand_error.py:70: RuntimeWarning: invalid value encountered in double_scalars
             # precision = sum_p_ij2 / sum_a2
-            logger.info(f'Number of ground truth clusters: {n_clusters}')
             if n_clusters == 1:
                 logger.info('Skipping ARandError computation: only 1 label present in the ground truth')
                 per_batch_arand.append(0.)
@@ -171,7 +170,6 @@ class AdaptedRandError:
 
             # compute per channel arand and return the minimum value
             per_channel_arand = [_arand_err(_target, channel_segm) for channel_segm in segm]
-            logger.info(f'Min ARand for channel: {np.argmin(per_channel_arand)}')
             per_batch_arand.append(np.min(per_channel_arand))
 
         # return mean arand error
@@ -424,6 +422,40 @@ class PSNR:
     def __call__(self, input, target):
         input, target = convert_to_numpy(input, target)
         return peak_signal_noise_ratio(target, input)
+
+
+class MSE:
+    """
+    Computes MSE between input and target
+    """
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __call__(self, input, target):
+        input, target = convert_to_numpy(input, target)
+        return mean_squared_error(input, target)
+
+
+class WeightedMSE:
+    def __init__(self, threshold, initial_weight, apply_below_threshold=True, **kwargs):
+        self.threshold = threshold
+        self.weight = initial_weight
+        self.apply_below_threshold = apply_below_threshold
+
+    def __call__(self, input, target):
+        input, target = convert_to_numpy(input, target)
+        mse = np.square(input - target)
+
+        # make the mask
+        if self.apply_below_threshold:
+            mask = target < self.threshold
+        else:
+            mask = target >= self.threshold
+
+        mse[mask] = mse[mask] * self.weight
+
+        return np.mean(mse)
 
 
 def get_evaluation_metric(config):
