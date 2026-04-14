@@ -7,14 +7,14 @@ import h5py
 import numpy as np
 
 import pytorch3dunet.augment.transforms as transforms
-from pytorch3dunet.datasets.utils import get_slice_builder, ConfigDataset, calculate_stats, sample_instances
+from pytorch3dunet.datasets.utils import get_slice_builder, VolumeFileDataset, calculate_stats, sample_instances
 from pytorch3dunet.unet3d.utils import get_logger
 
 logger = get_logger('HDF5Dataset')
 lock = Lock()
 
 
-class AbstractHDF5Dataset(ConfigDataset):
+class AbstractHDF5Dataset(VolumeFileDataset):
     """
     Implementation of torch.utils.data.Dataset backed by the HDF5 files, which iterates over the raw and label datasets
     patch by patch with a given stride.

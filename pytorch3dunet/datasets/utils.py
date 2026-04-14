@@ -37,6 +37,10 @@ class ConfigDataset(Dataset):
         return default_prediction_collate(batch)
 
 
+class VolumeFileDataset(ConfigDataset):
+    """File-backed volumetric patch datasets (HDF5, Zarr, …) used by predictors and loaders."""
+
+
 class SliceBuilder:
     """
     Builds the position of the patches in a given raw/label/weight ndarray based on the the patch and stride shape
@@ -246,6 +250,7 @@ def get_class(class_name, modules):
 def _loader_classes(class_name):
     modules = [
         'pytorch3dunet.datasets.hdf5',
+        'pytorch3dunet.datasets.zarr_dataset',
         'pytorch3dunet.datasets.memory',
         'pytorch3dunet.datasets.dsb',
         'pytorch3dunet.datasets.utils'

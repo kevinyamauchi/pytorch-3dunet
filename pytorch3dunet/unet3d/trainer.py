@@ -136,6 +136,10 @@ class UNet3DTrainer:
             during validation phase
         skip_train_validation (bool): if True eval_criterion is not evaluated on the training set (used mostly when
             evaluation is expensive)
+        early_stopping_patience (int): number of validation checks without sufficient improvement before stopping.
+            If None, early stopping is disabled.
+        early_stopping_min_delta (float): minimum metric improvement required to reset early stopping counter.
+        early_stopping_counter (int): internal state used when resuming from checkpoint.
     """
 
     def __init__(self, model, optimizer, lr_scheduler, loss_criterion,
@@ -145,7 +149,9 @@ class UNet3DTrainer:
                  validate_iters=None, num_iterations=1, num_epoch=0,
                  eval_score_higher_is_better=True, best_eval_score=None,
                  tensorboard_formatter=None, sample_plotter=None,
-                 skip_train_validation=False, **kwargs):
+                 skip_train_validation=False,
+                 early_stopping_patience=None, early_stopping_min_delta=0.0,
+                 early_stopping_counter=0, **kwargs):
 
         self.model = model
         self.optimizer = optimizer
@@ -183,6 +189,16 @@ class UNet3DTrainer:
         self.num_iterations = num_iterations
         self.num_epoch = num_epoch
         self.skip_train_validation = skip_train_validation
+        self.early_stopping_patience = early_stopping_patience
+        self.early_stopping_min_delta = early_stopping_min_delta
+        self.early_stopping_counter = early_stopping_counter
+        if self.early_stopping_patience is not None:
+            assert self.early_stopping_patience > 0, 'early_stopping_patience must be > 0'
+            assert self.early_stopping_min_delta >= 0, 'early_stopping_min_delta must be >= 0'
+            logger.info(
+                f"Early stopping enabled. patience={self.early_stopping_patience}, "
+                f"min_delta={self.early_stopping_min_delta}"
+            )
 
     @classmethod
     def from_checkpoint(cls, resume, model, optimizer, lr_scheduler, loss_criterion, eval_criterion, loaders,
@@ -206,6 +222,9 @@ class UNet3DTrainer:
                    log_after_iters=state['log_after_iters'],
                    validate_iters=state['validate_iters'],
                    skip_train_validation=state.get('skip_train_validation', False),
+                   early_stopping_patience=state.get('early_stopping_patience', None),
+                   early_stopping_min_delta=state.get('early_stopping_min_delta', 0.0),
+                   early_stopping_counter=state.get('early_stopping_counter', 0),
                    tensorboard_formatter=tensorboard_formatter,
                    sample_plotter=sample_plotter)
 
@@ -217,7 +236,8 @@ class UNet3DTrainer:
                         validate_iters=None, num_iterations=1, num_epoch=0,
                         eval_score_higher_is_better=True, best_eval_score=None,
                         tensorboard_formatter=None, sample_plotter=None,
-                        skip_train_validation=False, **kwargs):
+                        skip_train_validation=False,
+                        early_stopping_patience=None, early_stopping_min_delta=0.0, **kwargs):
         logger.info(f"Logging pre-trained model from '{pre_trained}'...")
         utils.load_checkpoint(pre_trained, model, None)
         if 'checkpoint_dir' not in kwargs:
@@ -238,7 +258,9 @@ class UNet3DTrainer:
                    validate_iters=validate_iters,
                    tensorboard_formatter=tensorboard_formatter,
                    sample_plotter=sample_plotter,
-                   skip_train_validation=skip_train_validation)
+                   skip_train_validation=skip_train_validation,
+                   early_stopping_patience=early_stopping_patience,
+                   early_stopping_min_delta=early_stopping_min_delta)
 
     def fit(self):
         for _ in range(self.num_epoch, self.max_num_epochs):
@@ -294,11 +316,16 @@ class UNet3DTrainer:
                     self.scheduler.step()
                 # log current learning rate in tensorboard
                 self._log_lr()
+                previous_best_eval_score = self.best_eval_score
                 # remember best validation metric
                 is_best = self._is_best_eval_score(eval_score)
+                self._update_early_stopping(eval_score, previous_best_eval_score)
 
                 # save checkpoint
                 self._save_checkpoint(is_best)
+
+                if self._should_stop_early():
+                    return True
 
             if self.num_iterations % self.log_after_iters == 0:
                 # if model contains final_activation layer for normalizing logits apply it, otherwise both
@@ -421,6 +448,36 @@ class UNet3DTrainer:
 
         return is_best
 
+    def _has_significant_improvement(self, eval_score, reference_score):
+        if self.eval_score_higher_is_better:
+            return eval_score > (reference_score + self.early_stopping_min_delta)
+        return eval_score < (reference_score - self.early_stopping_min_delta)
+
+    def _update_early_stopping(self, eval_score, previous_best_eval_score):
+        if self.early_stopping_patience is None:
+            return
+
+        if self._has_significant_improvement(eval_score, previous_best_eval_score):
+            self.early_stopping_counter = 0
+        else:
+            self.early_stopping_counter += 1
+            logger.info(
+                f'No significant validation improvement. '
+                f'early_stopping_counter={self.early_stopping_counter}/{self.early_stopping_patience}'
+            )
+
+    def _should_stop_early(self):
+        if self.early_stopping_patience is None:
+            return False
+
+        if self.early_stopping_counter >= self.early_stopping_patience:
+            logger.info(
+                f'Early stopping triggered after {self.early_stopping_counter} '
+                f'validation checks without sufficient improvement.'
+            )
+            return True
+        return False
+
     def _save_checkpoint(self, is_best):
         # remove `module` prefix from layer names when using `nn.DataParallel`
         # see: https://discuss.pytorch.org/t/solved-keyerror-unexpected-key-module-encoder-embedding-weight-in-state-dict/1686/20
@@ -442,7 +499,10 @@ class UNet3DTrainer:
             'validate_after_iters': self.validate_after_iters,
             'log_after_iters': self.log_after_iters,
             'validate_iters': self.validate_iters,
-            'skip_train_validation': self.skip_train_validation
+            'skip_train_validation': self.skip_train_validation,
+            'early_stopping_patience': self.early_stopping_patience,
+            'early_stopping_min_delta': self.early_stopping_min_delta,
+            'early_stopping_counter': self.early_stopping_counter
         }, is_best, checkpoint_dir=self.checkpoint_dir,
             logger=logger)
 
