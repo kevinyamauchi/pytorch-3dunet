@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from skimage import measure
 
-from pytorch3dunet.datasets.hdf5 import AbstractHDF5Dataset
+from pytorch3dunet.datasets.utils import VolumeFileDataset
 from pytorch3dunet.datasets.memory import MemoryDataset
 from pytorch3dunet.datasets.utils import SliceBuilder
 from pytorch3dunet.unet3d.utils import get_logger
@@ -81,7 +81,7 @@ class StandardPredictor(_AbstractPredictor):
         super().__init__(model, output_dir, config, **kwargs)
 
     def __call__(self, test_loader):
-        assert isinstance(test_loader.dataset, AbstractHDF5Dataset)
+        assert isinstance(test_loader.dataset, VolumeFileDataset)
 
         logger.info(f"Processing '{test_loader.dataset.file_path}'...")
         output_file = _get_output_file(dataset=test_loader.dataset, output_dir=self.output_dir)
