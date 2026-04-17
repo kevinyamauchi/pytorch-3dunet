@@ -219,6 +219,10 @@ class AbstractZarrDataset(VolumeFileDataset):
         results = []
         for file_path in file_paths:
             if os.path.isdir(file_path):
+                # Direct .zarr store path: keep it as a dataset root.
+                if file_path.endswith('.zarr'):
+                    results.append(file_path)
+                    continue
                 iters = [glob.glob(os.path.join(file_path, ext)) for ext in ['*.zarr']]
                 for fp in chain(*iters):
                     results.append(fp)
