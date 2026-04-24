@@ -14,7 +14,6 @@ import zarr
 
 import pytorch3dunet.augment.transforms as transforms
 from pytorch3dunet.datasets.utils import (
-    apply_lazy_mirror_padding,
     calculate_stats,
     get_slice_builder,
     sample_instances,
@@ -100,11 +99,19 @@ class AbstractZarrDataset(VolumeFileDataset):
             self.weight_maps = None
 
             if self.mirror_padding is not None:
-                # Wrap each raw array in a lazy reflect-padded view instead of materialising
-                # the full padded volume up front. For LazyZarrDataset this keeps reads chunk-
-                # aligned; for StandardZarrDataset the raw is already a numpy array so only
-                # patch-sized pads happen per __getitem__ (no full-volume numpy copy).
-                self.raws = apply_lazy_mirror_padding(self.raws, self.mirror_padding)
+                z, y, x = self.mirror_padding
+                pad_width = ((z, z), (y, y), (x, x))
+                padded_volumes = []
+                for raw in self.raws:
+                    if raw.ndim == 4:
+                        channels = [np.pad(r, pad_width=pad_width, mode='reflect') for r in raw]
+                        padded_volume = np.stack(channels)
+                    else:
+                        padded_volume = np.pad(raw, pad_width=pad_width, mode='reflect')
+
+                    padded_volumes.append(padded_volume)
+
+                self.raws = padded_volumes
 
         slice_builder = get_slice_builder(self.raws, self.labels, self.weight_maps, slice_builder_config)
         self.raw_slices = slice_builder.raw_slices
