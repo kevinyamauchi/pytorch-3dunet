@@ -11,9 +11,9 @@ import sys
 from typing import Tuple
 
 import h5py
-import numcodecs
 import numpy as np
 import zarr
+from zarr.codecs import BloscCodec, BloscShuffle
 
 
 def _default_chunks(shape: Tuple[int, ...]) -> Tuple[int, ...]:
@@ -45,7 +45,9 @@ def _h5_dataset_to_zarr(h5_ds: h5py.Dataset, z_parent, name: str, compressor) ->
     shape = h5_ds.shape
     dtype = h5_ds.dtype
     chunks = _default_chunks(shape)
-    arr = z_parent.create_dataset(name, shape=shape, dtype=dtype, chunks=chunks, compressor=compressor)
+    arr = z_parent.create_array(
+        name, shape=shape, dtype=dtype, chunks=chunks, compressors=compressor,
+    )
     _copy_slabwise(h5_ds, arr)
 
 
@@ -117,7 +119,7 @@ def main() -> int:
     p.add_argument('--delete-h5', action='store_true', help='Remove each source .h5 after successful conversion')
     args = p.parse_args()
 
-    compressor = numcodecs.Blosc(cname='zstd', clevel=5, shuffle=numcodecs.Blosc.SHUFFLE)
+    compressor = BloscCodec(cname='zstd', clevel=5, shuffle=BloscShuffle.shuffle)
     files = _iter_h5_files(args.roots)
     if not files:
         print('No HDF5 files found.', file=sys.stderr)
