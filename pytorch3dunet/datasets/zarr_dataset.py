@@ -13,7 +13,13 @@ import numpy as np
 import zarr
 
 import pytorch3dunet.augment.transforms as transforms
-from pytorch3dunet.datasets.utils import get_slice_builder, VolumeFileDataset, calculate_stats, sample_instances
+from pytorch3dunet.datasets.utils import (
+    apply_lazy_mirror_padding,
+    calculate_stats,
+    get_slice_builder,
+    sample_instances,
+    VolumeFileDataset,
+)
 from pytorch3dunet.unet3d.utils import get_logger
 
 logger = get_logger('ZarrDataset')
@@ -94,19 +100,11 @@ class AbstractZarrDataset(VolumeFileDataset):
             self.weight_maps = None
 
             if self.mirror_padding is not None:
-                z, y, x = self.mirror_padding
-                pad_width = ((z, z), (y, y), (x, x))
-                padded_volumes = []
-                for raw in self.raws:
-                    if raw.ndim == 4:
-                        channels = [np.pad(r, pad_width=pad_width, mode='reflect') for r in raw]
-                        padded_volume = np.stack(channels)
-                    else:
-                        padded_volume = np.pad(raw, pad_width=pad_width, mode='reflect')
-
-                    padded_volumes.append(padded_volume)
-
-                self.raws = padded_volumes
+                # Wrap each raw array in a lazy reflect-padded view instead of materialising
+                # the full padded volume up front. For LazyZarrDataset this keeps reads chunk-
+                # aligned; for StandardZarrDataset the raw is already a numpy array so only
+                # patch-sized pads happen per __getitem__ (no full-volume numpy copy).
+                self.raws = apply_lazy_mirror_padding(self.raws, self.mirror_padding)
 
         slice_builder = get_slice_builder(self.raws, self.labels, self.weight_maps, slice_builder_config)
         self.raw_slices = slice_builder.raw_slices
@@ -184,7 +182,12 @@ class AbstractZarrDataset(VolumeFileDataset):
             assert _volume_shape(raw) == _volume_shape(label), 'Raw and labels have to be of the same size'
 
     @classmethod
-    def create_datasets(cls, dataset_config, phase):
+    def _iter_datasets(cls, dataset_config, phase):
+        """
+        Generator yielding one dataset per file in ``dataset_config[phase]['file_paths']``.
+        Failures loading a single file are logged and skipped; iteration continues with the
+        next file.
+        """
         phase_config = dataset_config[phase]
 
         transformer_config = phase_config['transformer']
@@ -195,7 +198,6 @@ class AbstractZarrDataset(VolumeFileDataset):
         instance_ratio = phase_config.get('instance_ratio', None)
         random_seed = phase_config.get('random_seed', 0)
 
-        datasets = []
         for file_path in file_paths:
             try:
                 logger.info(f'Loading {phase} set from: {file_path}...')
@@ -208,10 +210,18 @@ class AbstractZarrDataset(VolumeFileDataset):
                               label_internal_path=dataset_config.get('label_internal_path', 'label'),
                               weight_internal_path=dataset_config.get('weight_internal_path', None),
                               instance_ratio=instance_ratio, random_seed=random_seed)
-                datasets.append(dataset)
             except Exception:
                 logger.error(f'Skipping {phase} set: {file_path}', exc_info=True)
-        return datasets
+                continue
+            yield dataset
+
+    @classmethod
+    def create_datasets(cls, dataset_config, phase):
+        return list(cls._iter_datasets(dataset_config, phase))
+
+    @classmethod
+    def iter_test_datasets(cls, dataset_config):
+        return cls._iter_datasets(dataset_config, phase='test')
 
     @staticmethod
     def traverse_zarr_paths(file_paths):

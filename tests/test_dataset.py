@@ -7,6 +7,101 @@ from torch.utils.data import DataLoader
 import pytest
 from pytorch3dunet.datasets.hdf5 import StandardHDF5Dataset, AbstractHDF5Dataset
 from pytorch3dunet.datasets.memory import MemoryDataset
+from pytorch3dunet.datasets.utils import _ReflectPaddedView, apply_lazy_mirror_padding
+
+
+class TestReflectPaddedView:
+    """
+    ``_ReflectPaddedView`` exposes a lazy, reflect-padded view of an underlying array-like.
+    It must be bit-for-bit equivalent to ``np.pad(inner, ..., mode='reflect')[slice]`` for any
+    patch slice the SliceBuilder can produce, but without materialising the full padded volume.
+    """
+
+    def test_matches_numpy_pad_3d(self):
+        np.random.seed(0)
+        # Interior patches, boundary patches on either side, and straddling patches, across a
+        # range of shapes / pad sizes. 2500 randomised patches in total.
+        configs = [((50, 80, 90), (16, 32, 32)),
+                   ((32, 64, 64), (16, 32, 32)),
+                   ((40, 100, 120), (10, 20, 20)),
+                   ((33, 65, 67), (16, 32, 32)),
+                   ((80, 80, 80), (32, 32, 32))]
+        for shape, pad in configs:
+            vol = np.random.randn(*shape).astype('float32')
+            pad_width = tuple((p, p) for p in pad)
+            ref = np.pad(vol, pad_width, mode='reflect')
+            view = _ReflectPaddedView(vol, pad_width)
+            assert view.shape == ref.shape
+            assert view.ndim == ref.ndim
+            assert view.dtype == ref.dtype
+            for _ in range(500):
+                sizes = [np.random.randint(max(1, pad[a]), 3 * pad[a] + 1) for a in range(3)]
+                sizes = [min(s, ref.shape[a]) for a, s in enumerate(sizes)]
+                starts = [np.random.randint(0, ref.shape[a] - sizes[a] + 1) for a in range(3)]
+                slc = tuple(slice(starts[a], starts[a] + sizes[a]) for a in range(3))
+                np.testing.assert_array_equal(view[slc], ref[slc])
+
+    def test_matches_numpy_pad_4d_channels(self):
+        np.random.seed(1)
+        vol = np.random.randn(3, 40, 80, 80).astype('float32')
+        pad_width = ((0, 0), (16, 16), (32, 32), (32, 32))
+        ref = np.pad(vol, pad_width, mode='reflect')
+        view = _ReflectPaddedView(vol, pad_width)
+        assert view.shape == ref.shape
+        for _ in range(300):
+            sizes = [3,
+                     np.random.randint(16, 50),
+                     np.random.randint(32, 100),
+                     np.random.randint(32, 100)]
+            starts = [0] + [np.random.randint(0, ref.shape[a] - sizes[a] + 1) for a in range(1, 4)]
+            slc = tuple(slice(starts[a], starts[a] + sizes[a]) for a in range(4))
+            np.testing.assert_array_equal(view[slc], ref[slc])
+
+    def test_apply_lazy_mirror_padding_wraps_shapes(self):
+        raws_3d = [np.zeros((40, 80, 80), dtype='float32')]
+        wrapped = apply_lazy_mirror_padding(raws_3d, (16, 32, 32))
+        assert wrapped[0].shape == (72, 144, 144)
+        assert wrapped[0].ndim == 3
+
+        raws_4d = [np.zeros((2, 40, 80, 80), dtype='float32')]
+        wrapped = apply_lazy_mirror_padding(raws_4d, (16, 32, 32))
+        assert wrapped[0].shape == (2, 72, 144, 144)
+        assert wrapped[0].ndim == 4
+
+    def test_does_not_materialise_full_volume(self):
+        """
+        Sanity-check that the view only reads the sub-region it needs on ``__getitem__``
+        rather than reading the whole backing array. We track access via a counter wrapper.
+        """
+
+        class CountingArray:
+            def __init__(self, arr):
+                self._arr = arr
+                self.shape = arr.shape
+                self.ndim = arr.ndim
+                self.dtype = arr.dtype
+                self.last_key = None
+
+            def __getitem__(self, key):
+                self.last_key = key
+                return self._arr[key]
+
+        inner = np.random.rand(100, 100, 100).astype('float32')
+        counter = CountingArray(inner)
+        view = _ReflectPaddedView(counter, ((16, 16), (32, 32), (32, 32)))
+
+        # Interior patch: fetch exactly matches the requested slice size (no over-fetch).
+        _ = view[slice(50, 66), slice(50, 82), slice(50, 82)]
+        fetched_shape = tuple(s.stop - s.start for s in counter.last_key)
+        assert fetched_shape == (16, 32, 32), f'interior over-fetch: {fetched_shape}'
+
+        # Pure-boundary patch on one axis: fetch is bounded, not full-volume.
+        _ = view[slice(0, 16), slice(40, 72), slice(40, 72)]
+        fetched_shape = tuple(s.stop - s.start for s in counter.last_key)
+        # axis 0: must include index 0 and enough data for reflect (pad=16 -> slab>=17)
+        assert fetched_shape[0] <= 100 and fetched_shape[0] >= 17
+        assert fetched_shape[1] == 32
+        assert fetched_shape[2] == 32
 
 
 class TestMemoryDataset:
