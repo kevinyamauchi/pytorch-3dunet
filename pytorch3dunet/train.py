@@ -1,3 +1,7 @@
+import os
+import random
+
+import numpy as np
 import torch
 
 from pytorch3dunet.datasets.utils import get_class
@@ -15,8 +19,13 @@ def main():
     manual_seed = config.get('manual_seed', None)
     if manual_seed is not None:
         logger.info(f'Seed the RNG for all devices with {manual_seed}')
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        random.seed(manual_seed)
+        np.random.seed(manual_seed)
         torch.manual_seed(manual_seed)
+        torch.cuda.manual_seed_all(manual_seed)
         # see https://pytorch.org/docs/stable/notes/randomness.html
+        torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 

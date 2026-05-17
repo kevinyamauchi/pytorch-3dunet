@@ -33,7 +33,8 @@ class AbstractZarrDataset(VolumeFileDataset):
                  label_internal_path='label',
                  weight_internal_path=None,
                  instance_ratio=None,
-                 random_seed=0):
+                 random_seed=0,
+                 raw_dtype=None):
         assert phase in ['train', 'val', 'test']
         if phase in ['train', 'val']:
             mirror_padding = None
@@ -49,6 +50,7 @@ class AbstractZarrDataset(VolumeFileDataset):
         self.file_path = file_path
 
         self.instance_ratio = instance_ratio
+        self.raw_dtype = np.dtype(raw_dtype) if raw_dtype is not None else None
 
         if isinstance(raw_internal_path, str):
             raw_internal_path = [raw_internal_path]
@@ -140,7 +142,8 @@ class AbstractZarrDataset(VolumeFileDataset):
             raise StopIteration
 
         raw_idx = self.raw_slices[idx]
-        raw_patch_transformed = self._transform_patches(self.raws, raw_idx, self.raw_transform)
+        raw_patch_transformed = self._transform_patches(self.raws, raw_idx, self.raw_transform,
+                                                        dtype=self.raw_dtype)
 
         if self.phase == 'test':
             if len(raw_idx) == 4:
@@ -156,10 +159,13 @@ class AbstractZarrDataset(VolumeFileDataset):
             return raw_patch_transformed, label_patch_transformed
 
     @staticmethod
-    def _transform_patches(datasets, label_idx, transformer):
+    def _transform_patches(datasets, label_idx, transformer, dtype=None):
         transformed_patches = []
         for dataset in datasets:
-            transformed_patch = transformer(dataset[label_idx])
+            patch = dataset[label_idx]
+            if dtype is not None:
+                patch = patch.astype(dtype, copy=False)
+            transformed_patch = transformer(patch)
             transformed_patches.append(transformed_patch)
 
         if len(transformed_patches) == 1:
@@ -207,7 +213,8 @@ class AbstractZarrDataset(VolumeFileDataset):
                               raw_internal_path=dataset_config.get('raw_internal_path', 'raw'),
                               label_internal_path=dataset_config.get('label_internal_path', 'label'),
                               weight_internal_path=dataset_config.get('weight_internal_path', None),
-                              instance_ratio=instance_ratio, random_seed=random_seed)
+                              instance_ratio=instance_ratio, random_seed=random_seed,
+                              raw_dtype=dataset_config.get('raw_dtype', None))
                 datasets.append(dataset)
             except Exception:
                 logger.error(f'Skipping {phase} set: {file_path}', exc_info=True)

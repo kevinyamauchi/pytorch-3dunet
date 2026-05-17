@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 import importlib
+import random
 
 import numpy as np
 import torch
@@ -8,6 +9,12 @@ from torch.utils.data import DataLoader, ConcatDataset, Dataset
 from pytorch3dunet.unet3d.utils import get_logger
 
 logger = get_logger('Dataset')
+
+
+def _seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2 ** 32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 class ConfigDataset(Dataset):
@@ -150,10 +157,12 @@ class FilterSliceBuilder(SliceBuilder):
 
         def ignore_predicate(raw_label_idx):
             label_idx = raw_label_idx[1]
-            patch = np.copy(label_datasets[0][label_idx])
+            patch = label_datasets[0][label_idx]
+            non_ignore_mask = patch != 0
             for ii in ignore_index:
-                patch[patch == ii] = 0
-            non_ignore_counts = np.count_nonzero(patch != 0)
+                if ii != 0:
+                    non_ignore_mask &= patch != ii
+            non_ignore_counts = np.count_nonzero(non_ignore_mask)
             non_ignore_counts = non_ignore_counts / patch.size
             return non_ignore_counts > threshold or rand_state.rand() < slack_acceptance
 
@@ -303,12 +312,31 @@ def get_train_loaders(config):
         batch_size = batch_size * torch.cuda.device_count()
 
     logger.info(f'Batch size for train/val loader: {batch_size}')
-    # when training with volumetric data use batch_size of 1 due to GPU memory constraints
+    data_loader_kwargs = {
+        'batch_size': batch_size,
+        'num_workers': num_workers,
+        'pin_memory': loaders_config.get('pin_memory', False),
+    }
+    if num_workers > 0:
+        prefetch_factor = loaders_config.get('prefetch_factor', None)
+        if prefetch_factor is not None:
+            data_loader_kwargs['prefetch_factor'] = prefetch_factor
+        data_loader_kwargs['persistent_workers'] = loaders_config.get('persistent_workers', False)
+        multiprocessing_context = loaders_config.get('multiprocessing_context', None)
+        if multiprocessing_context is not None:
+            data_loader_kwargs['multiprocessing_context'] = multiprocessing_context
+    manual_seed = config.get('manual_seed', None)
+    if manual_seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(manual_seed)
+        data_loader_kwargs['generator'] = generator
+        if num_workers > 0:
+            data_loader_kwargs['worker_init_fn'] = _seed_worker
+
     return {
-        'train': DataLoader(ConcatDataset(train_datasets), batch_size=batch_size, shuffle=True,
-                            num_workers=num_workers),
+        'train': DataLoader(ConcatDataset(train_datasets), shuffle=True, **data_loader_kwargs),
         # don't shuffle during validation: useful when showing how predictions for a given batch get better over time
-        'val': DataLoader(ConcatDataset(val_datasets), batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        'val': DataLoader(ConcatDataset(val_datasets), shuffle=False, **data_loader_kwargs)
     }
 
 
