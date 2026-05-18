@@ -15,7 +15,9 @@ import zarr
 import pytorch3dunet.augment.transforms as transforms
 from pytorch3dunet.datasets.utils import (
     calculate_stats,
+    get_ds_stats_file,
     get_slice_builder,
+    load_stats_from_yaml,
     sample_instances,
     VolumeFileDataset,
 )
@@ -38,7 +40,8 @@ class AbstractZarrDataset(VolumeFileDataset):
                  label_internal_path='label',
                  weight_internal_path=None,
                  instance_ratio=None,
-                 random_seed=0):
+                 random_seed=0,
+                 stats_file=None):
         assert phase in ['train', 'val', 'test']
         if phase in ['train', 'val']:
             mirror_padding = None
@@ -52,6 +55,8 @@ class AbstractZarrDataset(VolumeFileDataset):
         self.mirror_padding = mirror_padding
         self.phase = phase
         self.file_path = file_path
+        self.stats_file = stats_file
+        self.transformer_config = transformer_config
 
         self.instance_ratio = instance_ratio
 
@@ -122,9 +127,16 @@ class AbstractZarrDataset(VolumeFileDataset):
         logger.info(f'Number of patches: {self.patch_count}')
 
     def ds_stats(self):
-        min_value, max_value, mean, std = calculate_stats(self.raws)
+        min_value, max_value, mean, std = self._load_or_calculate_stats()
         logger.info(f'Input stats: min={min_value}, max={max_value}, mean={mean}, std={std}')
         return min_value, max_value, mean, std
+
+    def _load_or_calculate_stats(self):
+        if self.stats_file is not None:
+            logger.info(f'Loading input stats for {self.file_path} from {self.stats_file}')
+            return load_stats_from_yaml(self.stats_file, self.file_path)
+
+        return calculate_stats(self.raws, channelwise=_standardize_channelwise(self.transformer_config))
 
     @staticmethod
     def open_zarr_group(file_path, internal_paths):
@@ -216,7 +228,9 @@ class AbstractZarrDataset(VolumeFileDataset):
                               raw_internal_path=dataset_config.get('raw_internal_path', 'raw'),
                               label_internal_path=dataset_config.get('label_internal_path', 'label'),
                               weight_internal_path=dataset_config.get('weight_internal_path', None),
-                              instance_ratio=instance_ratio, random_seed=random_seed)
+                              instance_ratio=instance_ratio,
+                              random_seed=random_seed,
+                              stats_file=get_ds_stats_file(dataset_config))
             except Exception:
                 logger.error(f'Skipping {phase} set: {file_path}', exc_info=True)
                 continue
@@ -253,14 +267,13 @@ class LazyZarrDataset(AbstractZarrDataset):
     Lazy Zarr volumes (chunked on disk). Prefer ``num_workers >= 1`` for throughput; each worker process
     opens its own Zarr store.
 
-    Full-volume min/max/mean/std are not computed (would force a full read). Provide them in the loaders
-    config (same pattern as ``LazyHDF5Dataset``).
+    Full-volume min/max/mean/std are calculated once at startup, or loaded from ``ds_stats_file``.
     """
 
     def ds_stats(self):
-        logger.info(
-            'Using LazyZarrDataset. Make sure that the min/max/mean/std values are provided in the loaders config')
-        return None, None, None, None
+        min_value, max_value, mean, std = self._load_or_calculate_stats()
+        logger.info(f'LazyZarrDataset input stats: min={min_value}, max={max_value}, mean={mean}, std={std}')
+        return min_value, max_value, mean, std
 
     @staticmethod
     def open_zarr_group(file_path, internal_paths):
@@ -285,3 +298,10 @@ class StandardZarrDataset(AbstractZarrDataset):
     @staticmethod
     def fetch_datasets(root, internal_paths):
         return [np.asarray(root[internal_path]) for internal_path in internal_paths]
+
+
+def _standardize_channelwise(transformer_config):
+    for transform in transformer_config.get('raw', []):
+        if transform.get('name') == 'Standardize':
+            return transform.get('channelwise', False)
+    return False
