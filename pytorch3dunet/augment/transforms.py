@@ -576,6 +576,9 @@ class Standardize:
     def __call__(self, m):
         if self.mean is not None:
             mean, std = self.mean, self.std
+            if self.channelwise:
+                mean = _reshape_channelwise_stats(mean, m)
+                std = _reshape_channelwise_stats(std, m)
         else:
             if self.channelwise:
                 # normalize per-channel
@@ -589,6 +592,14 @@ class Standardize:
                 std = np.std(m)
 
         return (m - mean) / np.clip(std, a_min=self.eps, a_max=None)
+
+
+def _reshape_channelwise_stats(stats, m):
+    stats = np.asarray(stats, dtype=np.float32)
+    if stats.ndim == 0:
+        return stats
+    assert stats.shape[0] == m.shape[0], 'Channelwise stats must match the number of channels'
+    return stats.reshape((stats.shape[0],) + (1,) * (m.ndim - 1))
 
 
 class PercentileNormalizer:

@@ -5,7 +5,9 @@ import h5py
 import numpy as np
 from torch.utils.data import DataLoader
 import pytest
-from pytorch3dunet.datasets.hdf5 import StandardHDF5Dataset, AbstractHDF5Dataset
+import yaml
+
+from pytorch3dunet.datasets.hdf5 import StandardHDF5Dataset, LazyHDF5Dataset, AbstractHDF5Dataset
 from pytorch3dunet.datasets.memory import MemoryDataset
 
 
@@ -158,6 +160,71 @@ class TestHDF5Dataset:
 
         assert expected_files == actual_files
 
+    def test_lazy_hdf5_dataset_uses_full_volume_stats(self):
+        raw = _two_value_raw()
+        path = create_hdf5_dataset(raw)
+        dataset = LazyHDF5Dataset(path, phase='test',
+                                  slice_builder_config=_slice_builder_conf((16, 64, 64), (16, 64, 64)),
+                                  transformer_config=_standardize_transformer_config())
+
+        raw_patch, _ = dataset[0]
+
+        assert np.allclose(raw_patch.numpy(), -1)
+
+    def test_lazy_hdf5_dataset_loads_stats_from_yaml(self, tmpdir):
+        raw = _two_value_raw()
+        path = create_hdf5_dataset(raw)
+        stats_path = os.path.join(tmpdir, 'stats.yml')
+        with open(stats_path, 'w') as f:
+            yaml.safe_dump({path: {'min': 0, 'max': 10, 'mean': 1, 'std': 2}}, f)
+
+        dataset = LazyHDF5Dataset(path, phase='test',
+                                  slice_builder_config=_slice_builder_conf((16, 64, 64), (16, 64, 64)),
+                                  transformer_config=_standardize_transformer_config(),
+                                  stats_file=stats_path)
+
+        raw_patch, _ = dataset[0]
+
+        assert np.allclose(raw_patch.numpy(), -0.5)
+
+    def test_lazy_hdf5_dataset_loads_channelwise_stats_from_yaml(self, tmpdir):
+        raw = np.stack([np.zeros((16, 64, 64), dtype=np.float32),
+                        np.full((16, 64, 64), 10, dtype=np.float32)])
+        path = create_hdf5_dataset(raw)
+        stats_path = os.path.join(tmpdir, 'stats.yml')
+        with open(stats_path, 'w') as f:
+            yaml.safe_dump({path: {'min': [0, 0], 'max': [10, 10], 'mean': [1, 8], 'std': [2, 4]}}, f)
+
+        dataset = LazyHDF5Dataset(path, phase='test',
+                                  slice_builder_config=_slice_builder_conf((16, 64, 64), (16, 64, 64)),
+                                  transformer_config=_standardize_transformer_config(channelwise=True),
+                                  stats_file=stats_path)
+
+        raw_patch, _ = dataset[0]
+
+        assert np.allclose(raw_patch.numpy()[0], -0.5)
+        assert np.allclose(raw_patch.numpy()[1], 0.5)
+
+
+class TestZarrDataset:
+    def test_lazy_zarr_dataset_uses_full_volume_stats(self, tmpdir):
+        zarr = pytest.importorskip('zarr')
+        from pytorch3dunet.datasets.zarr_dataset import LazyZarrDataset
+
+        raw = _two_value_raw()
+        path = os.path.join(tmpdir, 'test.zarr')
+        root = zarr.open_group(path, mode='w')
+        _create_zarr_dataset(root, 'raw', raw)
+        _create_zarr_dataset(root, 'label', np.zeros_like(raw, dtype=np.uint8))
+
+        dataset = LazyZarrDataset(path, phase='test',
+                                  slice_builder_config=_slice_builder_conf((16, 64, 64), (16, 64, 64)),
+                                  transformer_config=_standardize_transformer_config())
+
+        raw_patch, _ = dataset[0]
+
+        assert np.allclose(raw_patch.numpy(), -1)
+
 
 def create_random_hdf5_dataset(shape, ignore_index=False, raw_datasets=None, label_datasets=None):
     if label_datasets is None:
@@ -178,6 +245,40 @@ def create_random_hdf5_dataset(shape, ignore_index=False, raw_datasets=None, lab
                 f.create_dataset(label_dataset, data=np.random.randint(0, 2, shape))
 
     return tmp_file.name
+
+
+def create_hdf5_dataset(raw):
+    tmp_file = NamedTemporaryFile(delete=False)
+    with h5py.File(tmp_file.name, 'w') as f:
+        f.create_dataset('raw', data=raw)
+        f.create_dataset('label', data=np.zeros_like(raw, dtype=np.uint8))
+
+    return tmp_file.name
+
+
+def _two_value_raw():
+    raw = np.zeros((32, 64, 64), dtype=np.float32)
+    raw[16:] = 10
+    return raw
+
+
+def _standardize_transformer_config(channelwise=False):
+    return {
+        'raw': [
+            {'name': 'Standardize', 'channelwise': channelwise},
+            {'name': 'ToTensor', 'expand_dims': True}
+        ],
+        'label': [
+            {'name': 'ToTensor', 'expand_dims': True}
+        ]
+    }
+
+
+def _create_zarr_dataset(root, name, data):
+    if hasattr(root, 'create_array'):
+        root.create_array(name, data=data)
+    else:
+        root.create_dataset(name, data=data)
 
 
 def _slice_builder_conf(patch_shape, stride_shape):

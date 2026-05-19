@@ -7,7 +7,14 @@ import h5py
 import numpy as np
 
 import pytorch3dunet.augment.transforms as transforms
-from pytorch3dunet.datasets.utils import get_slice_builder, VolumeFileDataset, calculate_stats, sample_instances
+from pytorch3dunet.datasets.utils import (
+    calculate_stats,
+    get_ds_stats_file,
+    get_slice_builder,
+    load_stats_from_yaml,
+    sample_instances,
+    VolumeFileDataset,
+)
 from pytorch3dunet.unet3d.utils import get_logger
 
 logger = get_logger('HDF5Dataset')
@@ -29,7 +36,8 @@ class AbstractHDF5Dataset(VolumeFileDataset):
                  label_internal_path='label',
                  weight_internal_path=None,
                  instance_ratio=None,
-                 random_seed=0):
+                 random_seed=0,
+                 stats_file=None):
         """
         :param file_path: path to H5 file containing raw data as well as labels and per pixel weights (optional)
         :param phase: 'train' for training, 'val' for validation, 'test' for testing; data augmentation is performed
@@ -55,6 +63,8 @@ class AbstractHDF5Dataset(VolumeFileDataset):
         self.mirror_padding = mirror_padding
         self.phase = phase
         self.file_path = file_path
+        self.stats_file = stats_file
+        self.transformer_config = transformer_config
 
         self.instance_ratio = instance_ratio
 
@@ -132,9 +142,16 @@ class AbstractHDF5Dataset(VolumeFileDataset):
 
     def ds_stats(self):
         # calculate global min, max, mean and std for normalization
-        min_value, max_value, mean, std = calculate_stats(self.raws)
+        min_value, max_value, mean, std = self._load_or_calculate_stats()
         logger.info(f'Input stats: min={min_value}, max={max_value}, mean={mean}, std={std}')
         return min_value, max_value, mean, std
+
+    def _load_or_calculate_stats(self):
+        if self.stats_file is not None:
+            logger.info(f'Loading input stats for {self.file_path} from {self.stats_file}')
+            return load_stats_from_yaml(self.stats_file, self.file_path)
+
+        return calculate_stats(self.raws, channelwise=_standardize_channelwise(self.transformer_config))
 
     @staticmethod
     def create_h5_file(file_path, internal_paths):
@@ -208,24 +225,24 @@ class AbstractHDF5Dataset(VolumeFileDataset):
             assert _volume_shape(raw) == _volume_shape(label), 'Raw and labels have to be of the same size'
 
     @classmethod
-    def create_datasets(cls, dataset_config, phase):
+    def _iter_datasets(cls, dataset_config, phase):
+        """
+        Generator yielding one dataset per file in ``dataset_config[phase]['file_paths']``.
+        Failures loading a single file are logged and skipped; iteration continues with the
+        next file.
+        """
         phase_config = dataset_config[phase]
 
-        # load data augmentation configuration
         transformer_config = phase_config['transformer']
-        # load slice builder config
         slice_builder_config = phase_config['slice_builder']
-        # load files to process
         file_paths = phase_config['file_paths']
         # file_paths may contain both files and directories; if the file_path is a directory all H5 files inside
         # are going to be included in the final file_paths
         file_paths = cls.traverse_h5_paths(file_paths)
 
-        # load instance sampling configuration
         instance_ratio = phase_config.get('instance_ratio', None)
         random_seed = phase_config.get('random_seed', 0)
 
-        datasets = []
         for file_path in file_paths:
             try:
                 logger.info(f'Loading {phase} set from: {file_path}...')
@@ -237,11 +254,21 @@ class AbstractHDF5Dataset(VolumeFileDataset):
                               raw_internal_path=dataset_config.get('raw_internal_path', 'raw'),
                               label_internal_path=dataset_config.get('label_internal_path', 'label'),
                               weight_internal_path=dataset_config.get('weight_internal_path', None),
-                              instance_ratio=instance_ratio, random_seed=random_seed)
-                datasets.append(dataset)
+                              instance_ratio=instance_ratio,
+                              random_seed=random_seed,
+                              stats_file=get_ds_stats_file(dataset_config))
             except Exception:
                 logger.error(f'Skipping {phase} set: {file_path}', exc_info=True)
-        return datasets
+                continue
+            yield dataset
+
+    @classmethod
+    def create_datasets(cls, dataset_config, phase):
+        return list(cls._iter_datasets(dataset_config, phase))
+
+    @classmethod
+    def iter_test_datasets(cls, dataset_config):
+        return cls._iter_datasets(dataset_config, phase='test')
 
     @staticmethod
     def traverse_h5_paths(file_paths):
@@ -266,7 +293,7 @@ class StandardHDF5Dataset(AbstractHDF5Dataset):
 
     def __init__(self, file_path, phase, slice_builder_config, transformer_config, mirror_padding=(16, 32, 32),
                  raw_internal_path='raw', label_internal_path='label', weight_internal_path=None,
-                 instance_ratio=None, random_seed=0):
+                 instance_ratio=None, random_seed=0, stats_file=None):
         super().__init__(file_path=file_path,
                          phase=phase,
                          slice_builder_config=slice_builder_config,
@@ -276,7 +303,8 @@ class StandardHDF5Dataset(AbstractHDF5Dataset):
                          label_internal_path=label_internal_path,
                          weight_internal_path=weight_internal_path,
                          instance_ratio=instance_ratio,
-                         random_seed=random_seed)
+                         random_seed=random_seed,
+                         stats_file=stats_file)
 
     @staticmethod
     def create_h5_file(file_path, internal_paths):
@@ -309,7 +337,7 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
 
     def __init__(self, file_path, phase, slice_builder_config, transformer_config, mirror_padding=(16, 32, 32),
                  raw_internal_path='raw', label_internal_path='label', weight_internal_path=None,
-                 instance_ratio=None, random_seed=0):
+                 instance_ratio=None, random_seed=0, stats_file=None):
         super().__init__(file_path=file_path,
                          phase=phase,
                          slice_builder_config=slice_builder_config,
@@ -319,7 +347,8 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
                          label_internal_path=label_internal_path,
                          weight_internal_path=weight_internal_path,
                          instance_ratio=instance_ratio,
-                         random_seed=random_seed)
+                         random_seed=random_seed,
+                         stats_file=stats_file)
 
     @staticmethod
     def create_h5_file(file_path, internal_paths):
@@ -351,8 +380,13 @@ class LazyHDF5Dataset(AbstractHDF5Dataset):
         return [input_file_h5[internal_path] for internal_path in internal_paths]
 
     def ds_stats(self):
-        # Do not calculate stats on the whole stacks when using lazy loader,
-        # they min, max, mean, std should be provided in the config
-        logger.info(
-            'Using LazyHDF5Dataset. Make sure that the min/max/mean/std values are provided in the loaders config')
-        return None, None, None, None
+        min_value, max_value, mean, std = self._load_or_calculate_stats()
+        logger.info(f'LazyHDF5Dataset input stats: min={min_value}, max={max_value}, mean={mean}, std={std}')
+        return min_value, max_value, mean, std
+
+
+def _standardize_channelwise(transformer_config):
+    for transform in transformer_config.get('raw', []):
+        if transform.get('name') == 'Standardize':
+            return transform.get('channelwise', False)
+    return False

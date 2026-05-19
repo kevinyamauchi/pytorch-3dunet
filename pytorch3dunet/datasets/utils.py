@@ -1,8 +1,10 @@
-from collections.abc import Sequence
 import importlib
+import os
+from collections.abc import Sequence
 
 import numpy as np
 import torch
+import yaml
 from torch.utils.data import DataLoader, ConcatDataset, Dataset
 
 from pytorch3dunet.unet3d.utils import get_logger
@@ -30,6 +32,21 @@ class ConfigDataset(Dataset):
             list of `Dataset` instances
         """
         raise NotImplementedError
+
+    @classmethod
+    def iter_test_datasets(cls, dataset_config):
+        """
+        Generator-style factory yielding one ``phase='test'`` dataset at a time.
+
+        Predictors iterate files sequentially, so there's no need to keep every dataset (and its
+        backing handles / slice index / optional mirror-padded raw volume) alive in memory at the
+        same time. Subclasses that read from files should override this to construct datasets
+        lazily one-by-one.
+
+        The default implementation falls back to :meth:`create_datasets` for backwards
+        compatibility (eager, full list kept in memory).
+        """
+        yield from cls.create_datasets(dataset_config, phase='test')
 
     @classmethod
     def prediction_collate(cls, batch):
@@ -342,8 +359,12 @@ def get_test_loaders(config, raw_dataset=None):
                                                       raw_dataset=raw_dataset,
                                                       phase='test')
     else:
-        logger.info('Creating datasets from files.')
-        test_datasets = dataset_class.create_datasets(loaders_config, phase='test')
+        logger.info('Creating datasets from files (lazy per-file construction).')
+        # iter_test_datasets yields one dataset at a time so that padded raw volumes, slice
+        # indexes and open file handles for already-processed files are released before the
+        # next file is opened. This bounds test-time memory by a single dataset instead of
+        # scaling with the number of input files.
+        test_datasets = dataset_class.iter_test_datasets(loaders_config)
 
     num_workers = loaders_config.get('num_workers', 1)
     logger.info(f'Number of workers for the dataloader: {num_workers}')
@@ -384,15 +405,221 @@ def default_prediction_collate(batch):
     raise TypeError((error_msg.format(type(batch[0]))))
 
 
-def calculate_stats(images):
+def _iter_stats_chunks(image, max_elements=16 * 1024 * 1024):
+    if isinstance(image, np.ndarray):
+        yield image
+        return
+
+    shape = getattr(image, 'shape', None)
+    ndim = getattr(image, 'ndim', None)
+    if shape is None or ndim is None or ndim < 3:
+        yield image[...]
+        return
+
+    if ndim == 4:
+        channels, _, height, width = shape
+        elements_per_z = channels * height * width
+        z_axis = 1
+    else:
+        _, height, width = shape
+        elements_per_z = height * width
+        z_axis = 0
+
+    step = max(1, max_elements // elements_per_z)
+    for z_start in range(0, shape[z_axis], step):
+        z_stop = min(shape[z_axis], z_start + step)
+        if ndim == 4:
+            yield image[(slice(None), slice(z_start, z_stop), slice(None), slice(None))]
+        else:
+            yield image[(slice(z_start, z_stop), slice(None), slice(None))]
+
+
+def calculate_stats(images, channelwise=False):
     """
     Calculates min, max, mean, std given a list of ndarrays
     """
-    # flatten first since the images might not be the same size
-    flat = np.concatenate(
-        [img.ravel() for img in images]
-    )
-    return np.min(flat), np.max(flat), np.mean(flat), np.std(flat)
+    if channelwise:
+        return _calculate_channelwise_stats(images)
+
+    return _calculate_global_stats(images)
+
+
+def _calculate_global_stats(images):
+    min_values = np.inf
+    max_values = -np.inf
+    totals = 0
+    sums = 0.0
+    sums_sq = 0.0
+
+    for image in images:
+        for chunk in _iter_stats_chunks(image):
+            chunk = np.asarray(chunk, dtype=np.float64)
+            if chunk.size == 0:
+                continue
+
+            min_values = min(min_values, np.min(chunk))
+            max_values = max(max_values, np.max(chunk))
+            totals += chunk.size
+            sums += np.sum(chunk)
+            sums_sq += np.sum(chunk * chunk)
+
+    if totals == 0:
+        raise ValueError('Cannot calculate stats for an empty dataset')
+
+    mean = sums / totals
+    variance = max(sums_sq / totals - mean * mean, 0.0)
+    return min_values, max_values, mean, np.sqrt(variance)
+
+
+def _calculate_channelwise_stats(images):
+    min_values = None
+    max_values = None
+    totals = None
+    sums = None
+    sums_sq = None
+
+    for image in images:
+        if getattr(image, 'ndim', None) != 4:
+            raise ValueError('Channelwise stats require raw datasets with shape CxDxHxW')
+
+        for chunk in _iter_stats_chunks(image):
+            chunk = np.asarray(chunk, dtype=np.float64)
+            if chunk.size == 0:
+                continue
+
+            axes = tuple(range(1, chunk.ndim))
+            chunk_min = np.min(chunk, axis=axes)
+            chunk_max = np.max(chunk, axis=axes)
+            chunk_sum = np.sum(chunk, axis=axes)
+            chunk_sum_sq = np.sum(chunk * chunk, axis=axes)
+            chunk_total = np.prod(chunk.shape[1:])
+
+            if min_values is None:
+                min_values = chunk_min
+                max_values = chunk_max
+                totals = np.zeros(chunk.shape[0], dtype=np.float64)
+                sums = np.zeros(chunk.shape[0], dtype=np.float64)
+                sums_sq = np.zeros(chunk.shape[0], dtype=np.float64)
+            else:
+                min_values = np.minimum(min_values, chunk_min)
+                max_values = np.maximum(max_values, chunk_max)
+
+            totals += chunk_total
+            sums += chunk_sum
+            sums_sq += chunk_sum_sq
+
+    if totals is None or np.any(totals == 0):
+        raise ValueError('Cannot calculate stats for an empty dataset')
+
+    mean = sums / totals
+    variance = np.maximum(sums_sq / totals - mean * mean, 0.0)
+    return min_values.tolist(), max_values.tolist(), mean.tolist(), np.sqrt(variance).tolist()
+
+
+def load_stats_from_yaml(stats_file, file_path):
+    """
+    Load per-file min/max/mean/std values from YAML.
+
+    Supported layouts:
+      /path/to/file.h5: {min: 0, max: 1, mean: 0.5, std: 0.1}
+      files:
+        - path: /path/to/file.h5
+          min: 0
+          max: 1
+          mean: 0.5
+          std: 0.1
+    """
+    with open(stats_file, 'r') as f:
+        stats_config = yaml.load(f, Loader=yaml.SafeLoader)
+
+    entry = _find_stats_entry(stats_config, file_path)
+    if entry is None:
+        raise KeyError(f'Cannot find stats for {file_path} in {stats_file}')
+
+    return _read_stats_values(entry, stats_file, file_path)
+
+
+def get_ds_stats_file(dataset_config):
+    stats_config = dataset_config.get('ds_stats_file', dataset_config.get('stats_file', None))
+    if isinstance(stats_config, dict):
+        return stats_config.get('path', stats_config.get('file', None))
+    return stats_config
+
+
+def _find_stats_entry(stats_config, file_path):
+    if stats_config is None:
+        return None
+
+    if _has_stats_keys(stats_config):
+        return stats_config
+
+    files = stats_config.get('files') if isinstance(stats_config, dict) else None
+    if isinstance(files, dict):
+        entry = _find_stats_entry(files, file_path)
+        if entry is not None:
+            return entry
+    elif isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            if _matches_file_path(item.get('path') or item.get('file_path') or item.get('file'), file_path):
+                return item.get('stats', item)
+
+    if not isinstance(stats_config, dict):
+        return None
+
+    for key in _file_path_keys(file_path):
+        if key in stats_config:
+            entry = stats_config[key]
+            return entry.get('stats', entry) if isinstance(entry, dict) else entry
+
+    return None
+
+
+def _read_stats_values(entry, stats_file, file_path):
+    if not isinstance(entry, dict):
+        raise ValueError(f'Invalid stats entry for {file_path} in {stats_file}: expected a mapping')
+
+    min_value = entry.get('min', entry.get('min_value'))
+    max_value = entry.get('max', entry.get('max_value'))
+    mean = entry.get('mean')
+    std = entry.get('std')
+
+    missing = [name for name, value in [('min', min_value), ('max', max_value), ('mean', mean), ('std', std)]
+               if value is None]
+    if missing:
+        raise KeyError(f'Missing stats keys for {file_path} in {stats_file}: {missing}')
+
+    return _stats_value(min_value), _stats_value(max_value), _stats_value(mean), _stats_value(std)
+
+
+def _stats_value(value):
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return float(value)
+
+
+def _has_stats_keys(entry):
+    if not isinstance(entry, dict):
+        return False
+    has_min = 'min' in entry or 'min_value' in entry
+    has_max = 'max' in entry or 'max_value' in entry
+    return has_min and has_max and 'mean' in entry and 'std' in entry
+
+
+def _matches_file_path(candidate, file_path):
+    if candidate is None:
+        return False
+    return str(candidate) in _file_path_keys(file_path)
+
+
+def _file_path_keys(file_path):
+    return {
+        str(file_path),
+        os.path.abspath(file_path),
+        os.path.realpath(file_path),
+        os.path.basename(file_path),
+    }
 
 
 def sample_instances(label_img, instance_ratio, random_state, ignore_labels=(0,)):
