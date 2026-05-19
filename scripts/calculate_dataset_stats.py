@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-from concurrent.futures import ProcessPoolExecutor
 import os
 import sys
 from pathlib import Path
@@ -8,9 +7,16 @@ import logging
 import h5py
 import yaml
 import zarr
+from tqdm import tqdm
 
 from pytorch3dunet.datasets.utils import calculate_stats
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 DEFAULT_INPUT_DIR = '/local1/lfranz/local_data/validated_raw/BiCycle/combined_zarr/'
 DEFAULT_OUTPUT = '/local1/lfranz/local_data/validated_raw/BiCycle/dataset_stats.yaml'
@@ -33,9 +39,10 @@ def main():
                         help='Calculate one value across all channels instead of per-channel values')
     parser.add_argument('--strict', action='store_true',
                         help='Fail immediately when a volume cannot be processed')
-    parser.add_argument('--workers', type=int, default=None,
-                        help='Number of worker processes. Defaults to ProcessPoolExecutor default.')
+    parser.add_argument('--log-level', default='INFO', help='Logging level')
     args = parser.parse_args()
+
+    logger.setLevel(args.log_level)
 
     input_roots = args.inputs or [args.input_dir]
     volume_paths = iter_volume_paths(input_roots)
@@ -45,29 +52,18 @@ def main():
     stats = {'files': {}}
     skipped = []
 
-    if args.workers is None or args.workers > 0:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            # Convert Path objects to strings for serialization safety in subprocesses.
-            jobs = [(str(p), args.internal_path, not args.global_stats) for p in volume_paths]
-            for abs_path, file_stats, error in executor.map(process_volume_file, jobs):
-                if error is not None:
-                    if args.strict:
-                        raise RuntimeError(error)
-                    skipped.append((abs_path, error))
-                    logging.error(f'Skipping {abs_path}: {error}')
-                    continue
-                stats['files'][abs_path] = file_stats
-    else:
-        for volume_path in volume_paths:
-            abs_path = os.path.abspath(volume_path)
-            _, file_stats, error = process_volume_file((abs_path, args.internal_path, not args.global_stats))
-            if error is not None:
-                if args.strict:
-                    raise RuntimeError(error)
-                skipped.append((abs_path, error))
-                logging.error(f'Skipping {abs_path}: {error}')
-                continue
-            stats['files'][abs_path] = file_stats
+    volume_paths_list = list(volume_paths)  # Ensure we can get length for tqdm
+    for volume_path in tqdm(volume_paths_list, desc="Processing volumes"):
+        abs_path = os.path.abspath(volume_path)
+        _, file_stats, error = process_volume_file((abs_path, args.internal_path, not args.global_stats))
+        if error is not None:
+            if args.strict:
+                raise RuntimeError(error)
+            skipped.append((abs_path, error))
+            logger.error(f'Skipping {abs_path}: {error}')
+            continue
+        stats['files'][abs_path] = file_stats
+    
 
     if not stats['files']:
         raise RuntimeError('No volumes were processed successfully')
@@ -77,9 +73,9 @@ def main():
     with output_path.open('w') as f:
         yaml.safe_dump(stats, f, sort_keys=True)
 
-    logging.info(f'Wrote stats for {len(stats["files"])} volumes to {output_path}')
+    logger.info(f'Wrote stats for {len(stats["files"])} volumes to {output_path}')
     if skipped:
-        logging.info(f'Skipped {len(skipped)} volumes; processed {len(stats["files"])} successfully')
+        logger.info(f'Skipped {len(skipped)} volumes; processed {len(stats["files"])} successfully')
 
 
 def iter_volume_paths(roots):
@@ -125,7 +121,7 @@ def process_volume_file(job):
     abs_path = os.path.abspath(volume_path_str)
 
     try:
-        logging.info(f'Calculating stats for {volume_path_str}')
+        logger.info(f'Calculating stats for {volume_path_str}')
         if volume_path_str.endswith('.zarr'):
             root = zarr.open_group(volume_path_str, mode='r')
             return calculate_volume_stats(abs_path, root, internal_path, channelwise)
