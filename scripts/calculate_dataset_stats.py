@@ -45,10 +45,22 @@ def main():
     stats = {'files': {}}
     skipped = []
 
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        # Convert Path objects to strings for serialization safety in subprocesses.
-        jobs = [(str(p), args.internal_path, not args.global_stats) for p in volume_paths]
-        for abs_path, file_stats, error in executor.map(process_volume_file, jobs):
+    if args.workers is None or args.workers > 0:
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            # Convert Path objects to strings for serialization safety in subprocesses.
+            jobs = [(str(p), args.internal_path, not args.global_stats) for p in volume_paths]
+            for abs_path, file_stats, error in executor.map(process_volume_file, jobs):
+                if error is not None:
+                    if args.strict:
+                        raise RuntimeError(error)
+                    skipped.append((abs_path, error))
+                    print(f'Skipping {abs_path}: {error}', file=sys.stderr, flush=True)
+                    continue
+                stats['files'][abs_path] = file_stats
+    else:
+        for volume_path in volume_paths:
+            abs_path = os.path.abspath(volume_path)
+            _, file_stats, error = process_volume_file((abs_path, args.internal_path, not args.global_stats))
             if error is not None:
                 if args.strict:
                     raise RuntimeError(error)
