@@ -4,7 +4,7 @@ from concurrent.futures import ProcessPoolExecutor
 import os
 import sys
 from pathlib import Path
-
+import logging
 import h5py
 import yaml
 import zarr
@@ -54,7 +54,7 @@ def main():
                     if args.strict:
                         raise RuntimeError(error)
                     skipped.append((abs_path, error))
-                    print(f'Skipping {abs_path}: {error}', file=sys.stderr, flush=True)
+                    logging.error(f'Skipping {abs_path}: {error}')
                     continue
                 stats['files'][abs_path] = file_stats
     else:
@@ -65,7 +65,7 @@ def main():
                 if args.strict:
                     raise RuntimeError(error)
                 skipped.append((abs_path, error))
-                print(f'Skipping {abs_path}: {error}', file=sys.stderr, flush=True)
+                logging.error(f'Skipping {abs_path}: {error}')
                 continue
             stats['files'][abs_path] = file_stats
 
@@ -77,9 +77,9 @@ def main():
     with output_path.open('w') as f:
         yaml.safe_dump(stats, f, sort_keys=True)
 
-    print(f'Wrote stats for {len(stats["files"])} volumes to {output_path}', flush=True)
+    logging.info(f'Wrote stats for {len(stats["files"])} volumes to {output_path}')
     if skipped:
-        print(f'Skipped {len(skipped)} volumes; processed {len(stats["files"])} successfully', flush=True)
+        logging.info(f'Skipped {len(skipped)} volumes; processed {len(stats["files"])} successfully')
 
 
 def iter_volume_paths(roots):
@@ -125,7 +125,7 @@ def process_volume_file(job):
     abs_path = os.path.abspath(volume_path_str)
 
     try:
-        print(f'Calculating stats for {volume_path_str}', flush=True)
+        logging.info(f'Calculating stats for {volume_path_str}')
         if volume_path_str.endswith('.zarr'):
             root = zarr.open_group(volume_path_str, mode='r')
             return calculate_volume_stats(abs_path, root, internal_path, channelwise)
